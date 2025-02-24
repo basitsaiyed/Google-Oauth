@@ -1,0 +1,6 @@
+.env
+credentials.json
+*.log
+/vendor/
+.idea/
+.vscode/
