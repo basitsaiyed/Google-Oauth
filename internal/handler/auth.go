@@ -2,11 +2,17 @@ package handler
 
 import (
 	// "go/token"
+	"context"
+	"encoding/json"
 	"google-calendar-api/utils"
 	"html/template"
 	"log"
 	"net/http"
 	"path/filepath"
+	"time"
+
+	"google-calendar-api/models"
+	"gorm.io/gorm"
 )
 
 func (h *Handler) LoginPage(w http.ResponseWriter, r *http.Request) {
@@ -63,6 +69,7 @@ func (h *Handler) GoogleLogin(w http.ResponseWriter, r *http.Request) {
 
 // GoogleCallback: Verify state before proceeding
 func (h *Handler) GoogleCallback(w http.ResponseWriter, r *http.Request) {
+
 	state, err := r.Cookie("oauthstate")
 	if err != nil || r.URL.Query().Get("state") != state.Value {
 		http.Error(w, "Invalid OAuth state", http.StatusUnauthorized)
@@ -81,6 +88,52 @@ func (h *Handler) GoogleCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Fetch user info from Google
+	client := h.oauthConfig.Client(context.Background(), token)
+	resp, err := client.Get("https://www.googleapis.com/oauth2/v2/userinfo")
+	if err != nil {
+		http.Error(w, "Failed to fetch user info", http.StatusInternalServerError)
+		return
+	}
+	defer resp.Body.Close()
+
+	var userInfo struct {
+		ID    string `json:"id"`
+		Email string `json:"email"`
+		Name  string `json:"name"`
+	}
+
+	if err := json.NewDecoder(resp.Body).Decode(&userInfo); err != nil {
+		http.Error(w, "Failed to parse user info", http.StatusInternalServerError)
+		return
+	}
+
+	// Save user details to DB
+	user := models.User{
+		GoogleID:     userInfo.ID,
+		Email:        userInfo.Email,
+		Name:         userInfo.Name,
+		AccessToken:  token.AccessToken,
+		RefreshToken: token.RefreshToken,
+		ExpiresAt:    time.Now().Add(time.Duration(token.Expiry.Unix()) * time.Second),
+	}
+
+	// Check if user exists, update or insert
+	var existingUser models.User
+	result := h.DB.Where("google_id = ?", userInfo.ID).First(&existingUser)
+	if result.Error != nil {
+		if result.Error == gorm.ErrRecordNotFound {
+			h.DB.Create(&user) // Insert new user
+		} else {
+			http.Error(w, "Database error", http.StatusInternalServerError)
+			return
+		}
+	} else {
+		existingUser.AccessToken = token.AccessToken
+		existingUser.RefreshToken = token.RefreshToken
+		existingUser.ExpiresAt = user.ExpiresAt
+		h.DB.Save(&existingUser) // Update existing user
+	}
 	// Store token in cookie
 	http.SetCookie(w, &http.Cookie{
 		Name:     "token",
