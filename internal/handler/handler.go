@@ -13,13 +13,16 @@ type Handler struct {
 	DB          *gorm.DB
 }
 
-func NewHandler() *Handler {
+func NewHandler(db *gorm.DB) *Handler {
 	config := &oauth2.Config{
 		ClientID:     os.Getenv("GOOGLE_CLIENT_ID"),
 		ClientSecret: os.Getenv("GOOGLE_CLIENT_SECRET"),
 		RedirectURL:  os.Getenv("GOOGLE_REDIRECT_URL"),
 
 		Scopes: []string{
+			"openid",  // Required for ID Token
+			"email",   // Get user email
+			"profile", // Get user name and profile pic
 			"https://www.googleapis.com/auth/calendar",
 			"https://www.googleapis.com/auth/calendar.events",
 		},
@@ -28,5 +31,6 @@ func NewHandler() *Handler {
 
 	return &Handler{
 		oauthConfig: config,
+		DB: db,
 	}
 }

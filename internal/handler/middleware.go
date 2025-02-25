@@ -3,11 +3,11 @@ package handler
 import (
 	"context"
 	"fmt"
-	"google-calendar-api/utils"
+	"log"
 	"net/http"
 	"strings"
 
-	"golang.org/x/oauth2"
+	"github.com/coreos/go-oidc"
 )
 
 // Define a type-safe context key
@@ -53,16 +53,32 @@ func (h *Handler) AuthMiddleware(next http.Handler) http.Handler {
 }
 
 // validateAndSetContext validates the token and returns a new context with the OAuth client
-func validateAndSetContext(r *http.Request, accessToken string, h *Handler) (context.Context, error) {
-	_, err := utils.ValidateToken(accessToken) // Ensure ValidateToken is correctly implemented
+func validateAndSetContext(r *http.Request, idToken string, h *Handler) (context.Context, error) {
+	provider, err := oidc.NewProvider(r.Context(), "https://accounts.google.com")
 	if err != nil {
-		return r.Context(), err // Return original request context instead of nil
+		log.Println("❌ Failed to create OIDC provider:", err)
+		return r.Context(), err
 	}
 
-	client := h.oauthConfig.Client(r.Context(), &oauth2.Token{
-		AccessToken: accessToken,
-	})
+	verifier := provider.Verifier(&oidc.Config{ClientID: h.oauthConfig.ClientID})
 
-	ctx := context.WithValue(r.Context(), clientKey, client) // Use type-safe key
+	idTokenObj, err := verifier.Verify(r.Context(), idToken)
+	if err != nil {
+		log.Println("❌ Invalid ID Token:", err)
+		return r.Context(), err
+	}
+
+	var userInfo struct {
+		Sub   string `json:"sub"`
+		Email string `json:"email"`
+		Name  string `json:"name"`
+	}
+
+	if err := idTokenObj.Claims(&userInfo); err != nil {
+		log.Println("❌ Failed to parse ID Token claims:", err)
+		return r.Context(), err
+	}
+
+	ctx := context.WithValue(r.Context(), "user", userInfo)
 	return ctx, nil
 }

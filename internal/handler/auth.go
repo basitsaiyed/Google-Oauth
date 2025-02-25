@@ -2,16 +2,16 @@ package handler
 
 import (
 	// "go/token"
-	"context"
-	"encoding/json"
-	"google-calendar-api/utils"
+
+	"errors"
 	"html/template"
 	"log"
 	"net/http"
 	"path/filepath"
-	"time"
 
 	"google-calendar-api/models"
+
+	"github.com/coreos/go-oidc"
 	"gorm.io/gorm"
 )
 
@@ -67,84 +67,129 @@ func (h *Handler) GoogleLogin(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, url, http.StatusTemporaryRedirect)
 }
 
-// GoogleCallback: Verify state before proceeding
+// GoogleCallback handles the OAuth2 callback from Google
 func (h *Handler) GoogleCallback(w http.ResponseWriter, r *http.Request) {
-
-	state, err := r.Cookie("oauthstate")
-	if err != nil || r.URL.Query().Get("state") != state.Value {
-		http.Error(w, "Invalid OAuth state", http.StatusUnauthorized)
-		return
-	}
-
+	// Get "code" from URL parameters
 	code := r.URL.Query().Get("code")
 	if code == "" {
-		http.Error(w, "Code not found in URL", http.StatusBadRequest)
+		log.Println("❌ No code found in request")
+		http.Error(w, "Code not found", http.StatusBadRequest)
 		return
 	}
 
+	// Exchange auth code for tokens (access token + ID token)
 	token, err := h.oauthConfig.Exchange(r.Context(), code)
 	if err != nil {
+		log.Println("❌ Failed to exchange token:", err)
 		http.Error(w, "Failed to exchange token", http.StatusInternalServerError)
 		return
 	}
+	log.Println("🔹 OAuth2 Token Response:", token)
 
-	// Fetch user info from Google
-	client := h.oauthConfig.Client(context.Background(), token)
-	resp, err := client.Get("https://www.googleapis.com/oauth2/v2/userinfo")
+	// Extract ID Token from the token response
+	idToken, ok := token.Extra("id_token").(string)
+	if !ok {
+		log.Println("❌ No ID Token found in OAuth response")
+		http.Error(w, "No ID Token received", http.StatusInternalServerError)
+		return
+	}
+
+	// Create OIDC provider using Google
+	provider, err := oidc.NewProvider(r.Context(), "https://accounts.google.com")
 	if err != nil {
-		http.Error(w, "Failed to fetch user info", http.StatusInternalServerError)
+		log.Println("❌ Failed to create OIDC provider:", err)
+		http.Error(w, "Failed to verify ID token", http.StatusInternalServerError)
 		return
 	}
-	defer resp.Body.Close()
 
+	// Verify and decode the ID Token
+	verifier := provider.Verifier(&oidc.Config{ClientID: h.oauthConfig.ClientID})
+	idTokenObj, err := verifier.Verify(r.Context(), idToken)
+	if err != nil {
+		log.Println("❌ Invalid ID Token:", err)
+		http.Error(w, "Invalid ID Token", http.StatusUnauthorized)
+		return
+	}
+
+	// Decode token claims to get user details
 	var userInfo struct {
-		ID    string `json:"id"`
-		Email string `json:"email"`
-		Name  string `json:"name"`
+		Sub     string `json:"sub"`
+		Email   string `json:"email"`
+		Name    string `json:"name"`
+		Picture string `json:"picture"`
 	}
 
-	if err := json.NewDecoder(resp.Body).Decode(&userInfo); err != nil {
-		http.Error(w, "Failed to parse user info", http.StatusInternalServerError)
+	if err := idTokenObj.Claims(&userInfo); err != nil {
+		log.Println("❌ Failed to parse ID Token claims:", err)
+		http.Error(w, "Failed to parse ID Token", http.StatusInternalServerError)
 		return
 	}
 
-	// Save user details to DB
-	user := models.User{
-		GoogleID:     userInfo.ID,
-		Email:        userInfo.Email,
-		Name:         userInfo.Name,
-		AccessToken:  token.AccessToken,
-		RefreshToken: token.RefreshToken,
-		ExpiresAt:    time.Now().Add(time.Duration(token.Expiry.Unix()) * time.Second),
+	// Ensure required fields are present
+	if userInfo.Sub == "" || userInfo.Email == "" {
+		log.Println("❌ UserInfo missing required fields:", userInfo)
+		http.Error(w, "Invalid user info received", http.StatusInternalServerError)
+		return
 	}
 
-	// Check if user exists, update or insert
+	// Check if the user exists in the database
 	var existingUser models.User
-	result := h.DB.Where("google_id = ?", userInfo.ID).First(&existingUser)
+	result := h.DB.Where("google_id = ?", userInfo.Sub).First(&existingUser)
+
 	if result.Error != nil {
-		if result.Error == gorm.ErrRecordNotFound {
-			h.DB.Create(&user) // Insert new user
+		if errors.Is(result.Error, gorm.ErrRecordNotFound) {
+			// New user, create record
+			newUser := models.User{
+				GoogleID:     userInfo.Sub,
+				Email:        userInfo.Email,
+				Name:         userInfo.Name,
+				Picture:      userInfo.Picture,
+				AccessToken:  token.AccessToken,
+				RefreshToken: token.RefreshToken,
+				ExpiresAt:    token.Expiry,
+			}
+
+			log.Println("🔹 New user, inserting into DB...")
+			if err := h.DB.Create(&newUser).Error; err != nil {
+				log.Println("❌ Error inserting user:", err)
+				http.Error(w, "Database error", http.StatusInternalServerError)
+				return
+			}
 		} else {
+			log.Println("❌ Error fetching user:", result.Error)
 			http.Error(w, "Database error", http.StatusInternalServerError)
 			return
 		}
 	} else {
+		// Existing user, update access token
+		log.Println("🔹 Existing user found, updating tokens...")
 		existingUser.AccessToken = token.AccessToken
-		existingUser.RefreshToken = token.RefreshToken
-		existingUser.ExpiresAt = user.ExpiresAt
-		h.DB.Save(&existingUser) // Update existing user
+		existingUser.ExpiresAt = token.Expiry
+
+		if token.RefreshToken != "" {
+			existingUser.RefreshToken = token.RefreshToken
+		}
+
+		if err := h.DB.Save(&existingUser).Error; err != nil {
+			log.Println("❌ Error updating user:", err)
+			http.Error(w, "Database error", http.StatusInternalServerError)
+			return
+		}
 	}
-	// Store token in cookie
+
+	// Store token in a cookie
 	http.SetCookie(w, &http.Cookie{
 		Name:     "token",
-		Value:    utils.GenerateToken(token.AccessToken),
+		Value:    idToken,
 		Path:     "/",
 		HttpOnly: true,
-		Secure:   false, // Change to true in production
+		Secure:   false,
 		SameSite: http.SameSiteLaxMode,
 	})
 
-	log.Println("Setting cookie with token:", token.AccessToken)
+	log.Println("✅ User authenticated successfully:", userInfo.Email)
+
+	// Redirect to dashboard or another relevant page
 	http.Redirect(w, r, "/api/dashboard", http.StatusTemporaryRedirect)
 }
 
