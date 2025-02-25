@@ -33,15 +33,13 @@ func (s *Server) setupRoutes(db *gorm.DB) {
 	// api.Handle("/dashboard", h.AuthMiddleware(http.HandlerFunc(h.Dashboard))).Methods("GET")
 	api.Use(h.AuthMiddleware)
 	api.HandleFunc("/dashboard", h.Dashboard).Methods("GET")
-	api.HandleFunc("/events", h.CreateEvent).Methods("POST")
-	api.HandleFunc("/events", h.ListEvents).Methods("GET")
-	api.HandleFunc("/event/create", h.CreateEvent)
-	api.HandleFunc("/event/all", h.ListEvents).Methods("GET")
+    api.HandleFunc("/events/create", h.CreateEvent).Methods("POST") // Create event
+    api.HandleFunc("/events/list", h.ListEvents).Methods("GET")     // List events    
+
+    // api.HandleFunc("/event/create-meeting", h.CreateGoogleCalendarEvent).Methods("POST") // ✅ New route added
 	api.HandleFunc("/logout", h.Logout)
 }
 
 func (s *Server) Run(addr string) error {
 	return http.ListenAndServe(addr, s.router)
 }
-
-// internal/handler/handler.go

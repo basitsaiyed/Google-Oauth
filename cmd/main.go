@@ -27,6 +27,7 @@ func main() {
 
 	// AutoMigrate the schema
 	db.AutoMigrate(&models.User{})
+	db.AutoMigrate(&models.Meeting{})
 	if err != nil {
         log.Fatal("❌ Migration failed:", err)
     }

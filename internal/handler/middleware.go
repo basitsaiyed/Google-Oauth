@@ -2,7 +2,6 @@ package handler
 
 import (
 	"context"
-	"fmt"
 	"log"
 	"net/http"
 	"strings"
@@ -32,7 +31,7 @@ func (h *Handler) AuthMiddleware(next http.Handler) http.Handler {
 		// 2️⃣ If not found in header, check cookies
 		if accessToken == "" {
 			cookie, err := r.Cookie("token")
-			fmt.Println("Cookie:", cookie.Value)
+			// fmt.Println("Cookie:", cookie.Value)
 			if err != nil {
 				http.Error(w, "No authorization header or token cookie", http.StatusUnauthorized)
 				return

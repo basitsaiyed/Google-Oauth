@@ -8,10 +8,12 @@ import (
 	"log"
 	"net/http"
 	"path/filepath"
+	"time"
 
 	"google-calendar-api/models"
 
 	"github.com/coreos/go-oidc"
+	"golang.org/x/oauth2"
 	"gorm.io/gorm"
 )
 
@@ -84,7 +86,7 @@ func (h *Handler) GoogleCallback(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Failed to exchange token", http.StatusInternalServerError)
 		return
 	}
-	log.Println("🔹 OAuth2 Token Response:", token)
+	// log.Println("🔹 OAuth2 Token Response:", token)
 
 	// Extract ID Token from the token response
 	idToken, ok := token.Extra("id_token").(string)
@@ -149,7 +151,7 @@ func (h *Handler) GoogleCallback(w http.ResponseWriter, r *http.Request) {
 				ExpiresAt:    token.Expiry,
 			}
 
-			log.Println("🔹 New user, inserting into DB...")
+			// log.Println("🔹 New user, inserting into DB...")
 			if err := h.DB.Create(&newUser).Error; err != nil {
 				log.Println("❌ Error inserting user:", err)
 				http.Error(w, "Database error", http.StatusInternalServerError)
@@ -187,7 +189,7 @@ func (h *Handler) GoogleCallback(w http.ResponseWriter, r *http.Request) {
 		SameSite: http.SameSiteLaxMode,
 	})
 
-	log.Println("✅ User authenticated successfully:", userInfo.Email)
+	// log.Println("✅ User authenticated successfully:", userInfo.Email)
 
 	// Redirect to dashboard or another relevant page
 	http.Redirect(w, r, "/api/dashboard", http.StatusTemporaryRedirect)
@@ -203,4 +205,97 @@ func (h *Handler) Logout(w http.ResponseWriter, r *http.Request) {
 		HttpOnly: true,
 	})
 	http.Redirect(w, r, "/login", http.StatusTemporaryRedirect)
+}
+
+// Secret Key for JWT decoding (replace with your actual key)
+var jwtSecret = []byte("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890")
+
+// getUserTokenFromDB retrieves the OAuth token using the user's email extracted from the ID token
+func (h *Handler) getUserTokenFromDB(r *http.Request) (*oauth2.Token, error) {
+	// Get the token from the cookie
+	cookie, err := r.Cookie("token")
+	if err != nil {
+		log.Println("❌ No token cookie found")
+		return nil, errors.New("user not authenticated")
+	}
+
+	// Extract ID token from the cookie
+	idTokenString := cookie.Value
+
+	// Create OIDC provider for Google
+	provider, err := oidc.NewProvider(oauth2.NoContext, "https://accounts.google.com")
+	if err != nil {
+		log.Println("❌ Failed to create OIDC provider:", err)
+		return nil, errors.New("failed to create OIDC provider")
+	}
+
+	// Create a verifier to validate Google's ID token
+	verifier := provider.Verifier(&oidc.Config{ClientID: h.oauthConfig.ClientID})
+
+	// Verify and parse the ID token
+	idToken, err := verifier.Verify(r.Context(), idTokenString)
+	if err != nil {
+		log.Println("❌ Failed to verify ID token:", err)
+		return nil, errors.New("invalid token")
+	}
+
+	// Extract user claims
+	var claims struct {
+		Email string `json:"email"`
+	}
+	if err := idToken.Claims(&claims); err != nil {
+		log.Println("❌ Failed to parse ID token claims:", err)
+		return nil, errors.New("failed to parse ID token")
+	}
+
+	// Ensure email exists
+	if claims.Email == "" {
+		log.Println("❌ Email not found in token claims")
+		return nil, errors.New("invalid token data")
+	}
+
+	// Fetch user from the database using email
+	var user models.User
+	if err := h.DB.Where("email = ?", claims.Email).First(&user).Error; err != nil {
+		log.Println("❌ Failed to retrieve user from DB:", err)
+		return nil, errors.New("failed to retrieve user token")
+	}
+
+	// Construct token object
+	oauthToken := &oauth2.Token{
+		AccessToken:  user.AccessToken,
+		RefreshToken: user.RefreshToken,
+		Expiry:       user.ExpiresAt,
+	}
+
+	// Check if the token is expired and refresh if needed
+	if time.Now().After(user.ExpiresAt) {
+		log.Println("🔄 Token expired, refreshing...")
+
+		newToken, err := h.refreshAccessToken(user.RefreshToken)
+		if err != nil {
+			log.Println("❌ Failed to refresh token:", err)
+			return nil, errors.New("failed to refresh token")
+		}
+
+		// Update user token in DB
+		user.AccessToken = newToken.AccessToken
+		user.ExpiresAt = newToken.Expiry
+		h.DB.Save(&user)
+
+		return newToken, nil
+	}
+
+	log.Println("✅ Token retrieved successfully")
+	return oauthToken, nil
+}
+
+// Function to refresh the access token using the refresh token
+func (h *Handler) refreshAccessToken(refreshToken string) (*oauth2.Token, error) {
+	tokenSource := h.oauthConfig.TokenSource(oauth2.NoContext, &oauth2.Token{RefreshToken: refreshToken})
+	newToken, err := tokenSource.Token()
+	if err != nil {
+		return nil, err
+	}
+	return newToken, nil
 }

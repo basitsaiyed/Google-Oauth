@@ -1,11 +1,13 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Dashboard - Calendar App</title>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/tailwindcss/2.2.19/tailwind.min.js"></script>
 </head>
+
 <body class="bg-gray-100">
     <nav class="bg-white shadow-md">
         <div class="container mx-auto px-6 py-3">
@@ -25,27 +27,26 @@
                     <div>
                         <label class="block text-sm font-medium text-gray-700">Title</label>
                         <input type="text" name="summary" required
-                               class="mt-1 block w-full rounded-md border-gray-300 shadow-sm p-2 border">
+                            class="mt-1 block w-full rounded-md border-gray-300 shadow-sm p-2 border">
                     </div>
                     <div>
                         <label class="block text-sm font-medium text-gray-700">Description</label>
                         <textarea name="description" rows="3"
-                                class="mt-1 block w-full rounded-md border-gray-300 shadow-sm p-2 border"></textarea>
+                            class="mt-1 block w-full rounded-md border-gray-300 shadow-sm p-2 border"></textarea>
                     </div>
                     <div class="grid grid-cols-2 gap-4">
                         <div>
                             <label class="block text-sm font-medium text-gray-700">Start</label>
                             <input type="datetime-local" name="start" required
-                                   class="mt-1 block w-full rounded-md border-gray-300 shadow-sm p-2 border">
+                                class="mt-1 block w-full rounded-md border-gray-300 shadow-sm p-2 border">
                         </div>
                         <div>
                             <label class="block text-sm font-medium text-gray-700">End</label>
                             <input type="datetime-local" name="end" required
-                                   class="mt-1 block w-full rounded-md border-gray-300 shadow-sm p-2 border">
+                                class="mt-1 block w-full rounded-md border-gray-300 shadow-sm p-2 border">
                         </div>
                     </div>
-                    <button type="submit" 
-                            class="w-full bg-blue-500 text-white py-2 px-4 rounded-md hover:bg-blue-600">
+                    <button type="submit" class="w-full bg-blue-500 text-white py-2 px-4 rounded-md hover:bg-blue-600">
                         Create Event
                     </button>
                 </form>
@@ -65,19 +66,19 @@
         // Fetch and display events
         async function fetchEvents() {
             try {
-                const response = await fetch('/event/all');
+                const response = await fetch('/events/list'); // Updated endpoint
                 if (!response.ok) throw new Error('Failed to fetch events');
                 const data = await response.json();
-                
+
                 const eventsList = document.getElementById('eventsList');
                 eventsList.innerHTML = '';
-                
+
                 data.events.forEach(event => {
                     const eventDiv = document.createElement('div');
                     eventDiv.className = 'p-4 border rounded-md';
                     eventDiv.innerHTML = `
-                        <h3 class="font-bold">${event.summary}</h3>
-                        <p class="text-sm text-gray-600">${new Date(event.start.dateTime).toLocaleString()}</p>
+                        <h3 class="font-bold">${event.title}</h3>
+                        <p class="text-sm text-gray-600">${new Date(event.start_time).toLocaleString()}</p>
                         <p class="text-sm">${event.description || ''}</p>
                     `;
                     eventsList.appendChild(eventDiv);
@@ -91,22 +92,23 @@
         document.getElementById('createEventForm').addEventListener('submit', async (e) => {
             e.preventDefault();
             const formData = new FormData(e.target);
-            
+
             const eventData = {
                 summary: formData.get('summary'),
                 description: formData.get('description'),
                 start: {
-                    dateTime: formData.get('start'),
+                    dateTime: new Date(formData.get('start')).toISOString(), // Convert to RFC3339
                     timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone
                 },
                 end: {
-                    dateTime: formData.get('end'),
+                    dateTime: new Date(formData.get('end')).toISOString(), // Convert to RFC3339
                     timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone
                 }
+
             };
 
             try {
-                const response = await fetch('/event/create', {
+                const response = await fetch('/api/events/create', { // Updated endpoint
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(eventData)
@@ -136,4 +138,5 @@
         fetchEvents();
     </script>
 </body>
+
 </html>
