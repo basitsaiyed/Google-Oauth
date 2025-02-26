@@ -3,10 +3,8 @@ package handler
 import (
 	"encoding/json"
 	"fmt"
-	"google-calendar-api/models"
 	"log"
 	"net/http"
-	"strings"
 	"time"
 
 	"golang.org/x/oauth2"
@@ -51,7 +49,7 @@ func (h *Handler) CreateEvent(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Step 2: Retrieve OAuth token from session or database
-	token, userEmail, err := h.getUserTokenFromDB(r) // Implement this function to get the token
+	token, _, err := h.getUserTokenFromDB(r) // Implement this function to get the token
 	if err != nil {
 		log.Println("[ERROR] Failed to retrieve user token:", err)
 		http.Error(w, "Failed to retrieve token", http.StatusUnauthorized)
@@ -105,42 +103,80 @@ func (h *Handler) CreateEvent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Step 8: Store event in the database
-	startTime, _ := time.Parse(time.RFC3339, request.Start.DateTime)
-	endTime, _ := time.Parse(time.RFC3339, request.End.DateTime)
-
-	meeting := models.Meeting{
-		Title:       request.Title,
-		Description: request.Description,
-		StartTime:   startTime,
-		EndTime:     endTime,
-		EventID:     createdEvent.Id,
-		Attendees:   strings.Join(request.Attendees, ","), // Store emails as comma-separated values
-        CreatedBy:   userEmail,
-	}
-
-	if err := h.DB.Create(&meeting).Error; err != nil {
-		log.Println("[ERROR] Failed to save event to database:", err)
-		http.Error(w, "Failed to save event to database", http.StatusInternalServerError)
-		return
-	}
-
-	// Step 9: Respond with success message
+	// Step 8: Respond with success message
 	w.WriteHeader(http.StatusCreated)
 	json.NewEncoder(w).Encode(map[string]string{"message": "Event created successfully", "event_id": createdEvent.Id})
 
 	fmt.Println("✅ Event Created Successfully!")
 }
 
+// ListEvents fetches upcoming meetings from both Google Calendar and the database
 func (h *Handler) ListEvents(w http.ResponseWriter, r *http.Request) {
-	// Fetch all events from database
-	var meetings []models.Meeting
-	if err := h.DB.Find(&meetings).Error; err != nil {
-		http.Error(w, "Failed to fetch events", http.StatusInternalServerError)
+	log.Println("📌 In ListEvents handler")
+
+	// Step 1: Retrieve OAuth token from database
+	token, userEmail, err := h.getUserTokenFromDB(r)
+	if err != nil {
+		log.Println("[ERROR] Failed to retrieve user token:", err)
+		http.Error(w, "Failed to retrieve token", http.StatusUnauthorized)
 		return
 	}
 
-	// Return events as JSON response
+	// Step 2: Create Google Calendar service client
+	client := h.oauthConfig.Client(oauth2.NoContext, token)
+	service, err := calendar.New(client)
+	if err != nil {
+		log.Println("[ERROR] Failed to create calendar service:", err)
+		http.Error(w, "Failed to create calendar service", http.StatusInternalServerError)
+		return
+	}
+
+	// Step 3: Fetch upcoming meetings from Google Calendar
+	now := time.Now().Format(time.RFC3339)
+	weekLater := time.Now().AddDate(0, 0, 7).Format(time.RFC3339)
+
+	events, err := service.Events.List("primary").
+		ShowDeleted(false).
+		SingleEvents(true).
+		TimeMin(now).
+		TimeMax(weekLater).
+		OrderBy("startTime").
+		Do()
+	if err != nil {
+		log.Println("[ERROR] Failed to fetch events from Google Calendar:", err)
+		http.Error(w, "Failed to fetch Google Calendar events", http.StatusInternalServerError)
+		return
+	}
+
+	// Step 4: Process Google Calendar events
+	var googleMeetings []map[string]interface{}
+	for _, item := range events.Items {
+		startTime, _ := time.Parse(time.RFC3339, item.Start.DateTime)
+		endTime, _ := time.Parse(time.RFC3339, item.End.DateTime)
+
+		attendees := []string{}
+		if item.Attendees != nil {
+			for _, a := range item.Attendees {
+				attendees = append(attendees, a.Email)
+			}
+		}
+
+		googleMeetings = append(googleMeetings, map[string]interface{}{
+			"title":       item.Summary,
+			"description": item.Description,
+			"start_time":  startTime,
+			"end_time":    endTime,
+			"event_id":    item.Id,
+			"attendees":   attendees,
+			"created_by":  userEmail,
+		})
+	}
+
+	// Step 5: Send response
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{"events": meetings})
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"events": googleMeetings,
+	})
+
+	log.Println("✅ Events Listed Successfully!")
 }

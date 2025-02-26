@@ -79,13 +79,15 @@
                 eventsList.innerHTML = '';
 
                 data.events.forEach(event => {
+                    
                     const eventDiv = document.createElement('div');
                     eventDiv.className = 'p-4 border rounded-md';
+                    let attendeesText = event.attendees ? event.attendees.split(",").join(", ") : "None";
                     eventDiv.innerHTML = `
                         <h3 class="font-bold">${event.title}</h3>
                         <p class="text-sm text-gray-600">📅 ${new Date(event.start_time).toLocaleString()}</p>
                         <p class="text-sm">${event.description || 'No description provided'}</p>
-                        <p class="text-sm text-blue-500">👥 Attendees: ${event.attendees ? event.attendees.join(", ") : "None"}</p>
+                        <p class="text-sm text-blue-500">👥 Attendees: ${attendeesText}</p>
                     `;
                     eventsList.appendChild(eventDiv);
                 });
