@@ -211,22 +211,22 @@ func (h *Handler) Logout(w http.ResponseWriter, r *http.Request) {
 var jwtSecret = []byte("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890")
 
 // getUserTokenFromDB retrieves the OAuth token using the user's email extracted from the ID token
-func (h *Handler) getUserTokenFromDB(r *http.Request) (*oauth2.Token, error) {
+func (h *Handler) getUserTokenFromDB(r *http.Request) (*oauth2.Token, string, error) {
 	// Get the token from the cookie
 	cookie, err := r.Cookie("token")
 	if err != nil {
 		log.Println("❌ No token cookie found")
-		return nil, errors.New("user not authenticated")
+		return nil, "", errors.New("user not authenticated")
 	}
 
 	// Extract ID token from the cookie
 	idTokenString := cookie.Value
 
 	// Create OIDC provider for Google
-	provider, err := oidc.NewProvider(oauth2.NoContext, "https://accounts.google.com")
+	provider, err := oidc.NewProvider(r.Context(), "https://accounts.google.com")
 	if err != nil {
 		log.Println("❌ Failed to create OIDC provider:", err)
-		return nil, errors.New("failed to create OIDC provider")
+		return nil, "", errors.New("failed to create OIDC provider")
 	}
 
 	// Create a verifier to validate Google's ID token
@@ -236,7 +236,7 @@ func (h *Handler) getUserTokenFromDB(r *http.Request) (*oauth2.Token, error) {
 	idToken, err := verifier.Verify(r.Context(), idTokenString)
 	if err != nil {
 		log.Println("❌ Failed to verify ID token:", err)
-		return nil, errors.New("invalid token")
+		return nil, "", errors.New("invalid token")
 	}
 
 	// Extract user claims
@@ -245,20 +245,20 @@ func (h *Handler) getUserTokenFromDB(r *http.Request) (*oauth2.Token, error) {
 	}
 	if err := idToken.Claims(&claims); err != nil {
 		log.Println("❌ Failed to parse ID token claims:", err)
-		return nil, errors.New("failed to parse ID token")
+		return nil, "", errors.New("failed to parse ID token")
 	}
 
 	// Ensure email exists
 	if claims.Email == "" {
 		log.Println("❌ Email not found in token claims")
-		return nil, errors.New("invalid token data")
+		return nil, "", errors.New("invalid token data")
 	}
 
 	// Fetch user from the database using email
 	var user models.User
 	if err := h.DB.Where("email = ?", claims.Email).First(&user).Error; err != nil {
 		log.Println("❌ Failed to retrieve user from DB:", err)
-		return nil, errors.New("failed to retrieve user token")
+		return nil, "", errors.New("failed to retrieve user token")
 	}
 
 	// Construct token object
@@ -275,7 +275,7 @@ func (h *Handler) getUserTokenFromDB(r *http.Request) (*oauth2.Token, error) {
 		newToken, err := h.refreshAccessToken(user.RefreshToken)
 		if err != nil {
 			log.Println("❌ Failed to refresh token:", err)
-			return nil, errors.New("failed to refresh token")
+			return nil, "", errors.New("failed to refresh token")
 		}
 
 		// Update user token in DB
@@ -283,11 +283,11 @@ func (h *Handler) getUserTokenFromDB(r *http.Request) (*oauth2.Token, error) {
 		user.ExpiresAt = newToken.Expiry
 		h.DB.Save(&user)
 
-		return newToken, nil
+		return newToken, claims.Email, nil
 	}
 
 	log.Println("✅ Token retrieved successfully")
-	return oauthToken, nil
+	return oauthToken, claims.Email, nil
 }
 
 // Function to refresh the access token using the refresh token

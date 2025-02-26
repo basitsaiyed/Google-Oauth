@@ -9,17 +9,18 @@ import (
 	"github.com/coreos/go-oidc"
 )
 
-// Define a type-safe context key
+// contextKey is a type-safe key for storing user information in the request context.
 type contextKey string
 
-const clientKey contextKey = "client"
+const userKey contextKey = "user"
 
-// AuthMiddleware checks for the token in Authorization header or cookie
+// AuthMiddleware validates authentication tokens from request headers or cookies.
+// It verifies the token against Google's OIDC provider and injects user details into the request context.
 func (h *Handler) AuthMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var accessToken string
 
-		// 1️⃣ Check "Authorization" header first
+		// Check "Authorization" header for a Bearer token
 		authHeader := r.Header.Get("Authorization")
 		if authHeader != "" {
 			tokenParts := strings.Split(authHeader, " ")
@@ -28,31 +29,31 @@ func (h *Handler) AuthMiddleware(next http.Handler) http.Handler {
 			}
 		}
 
-		// 2️⃣ If not found in header, check cookies
+		// If no token found in header, check cookies
 		if accessToken == "" {
 			cookie, err := r.Cookie("token")
-			// fmt.Println("Cookie:", cookie.Value)
 			if err != nil {
-				http.Error(w, "No authorization header or token cookie", http.StatusUnauthorized)
+				http.Error(w, "Unauthorized: No valid authentication token", http.StatusUnauthorized)
 				return
 			}
 			accessToken = cookie.Value
 		}
 
-		// 3️⃣ Validate token and set context
-		ctx, err := validateAndSetContext(r, accessToken, h)
+		// Validate token and set user info in request context
+		ctx, err := h.validateAndSetContext(r, accessToken)
 		if err != nil {
-			http.Error(w, "Invalid token in middleware", http.StatusUnauthorized)
+			http.Error(w, "Unauthorized: Invalid authentication token", http.StatusUnauthorized)
 			return
 		}
 
-		// 4️⃣ Call the next handler with the new context
+		// Proceed to the next handler with updated context
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }
 
-// validateAndSetContext validates the token and returns a new context with the OAuth client
-func validateAndSetContext(r *http.Request, idToken string, h *Handler) (context.Context, error) {
+// validateAndSetContext verifies the given token using Google's OIDC provider
+// and returns a new request context containing user details.
+func (h *Handler) validateAndSetContext(r *http.Request, idToken string) (context.Context, error) {
 	provider, err := oidc.NewProvider(r.Context(), "https://accounts.google.com")
 	if err != nil {
 		log.Println("❌ Failed to create OIDC provider:", err)
@@ -60,24 +61,24 @@ func validateAndSetContext(r *http.Request, idToken string, h *Handler) (context
 	}
 
 	verifier := provider.Verifier(&oidc.Config{ClientID: h.oauthConfig.ClientID})
-
 	idTokenObj, err := verifier.Verify(r.Context(), idToken)
 	if err != nil {
 		log.Println("❌ Invalid ID Token:", err)
 		return r.Context(), err
 	}
 
+	// Extract user claims from ID token
 	var userInfo struct {
 		Sub   string `json:"sub"`
 		Email string `json:"email"`
 		Name  string `json:"name"`
 	}
-
 	if err := idTokenObj.Claims(&userInfo); err != nil {
 		log.Println("❌ Failed to parse ID Token claims:", err)
 		return r.Context(), err
 	}
 
-	ctx := context.WithValue(r.Context(), "user", userInfo)
+	// Store user info in request context
+	ctx := context.WithValue(r.Context(), userKey, userInfo)
 	return ctx, nil
 }
